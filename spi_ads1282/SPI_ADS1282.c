@@ -1,28 +1,5 @@
-//*****************************************************************************
-//
-// hello.c - Simple hello world example.
-//
-// Copyright (c) 2012-2017 Texas Instruments Incorporated.  All rights reserved.
-// Software License Agreement
-//
-// Texas Instruments (TI) is supplying this software for use solely and
-// exclusively on TI's microcontroller products. The software is owned by
-// TI and/or its suppliers, and is protected under applicable copyright
-// laws. You may not combine this software with "viral" open-source
-// software in order to form a larger program.
-//
-// THIS SOFTWARE IS PROVIDED "AS IS" AND WITH ALL FAULTS.
-// NO WARRANTIES, WHETHER EXPRESS, IMPLIED OR STATUTORY, INCLUDING, BUT
-// NOT LIMITED TO, IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE APPLY TO THIS SOFTWARE. TI SHALL NOT, UNDER ANY
-// CIRCUMSTANCES, BE LIABLE FOR SPECIAL, INCIDENTAL, OR CONSEQUENTIAL
-// DAMAGES, FOR ANY REASON WHATSOEVER.
-//
-// This is part of revision 2.1.4.178 of the EK-TM4C123GXL Firmware Package.
-//
-//*****************************************************************************
-
 #include <stdint.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
 #include "inc/hw_memmap.h"
@@ -61,8 +38,9 @@
 #define UPLOAD_START    (0x6000)//(0x8000)
 #define FLASH_MAX       (0x40000)
 #define FIRMWARE_START  (UPLOAD_START   +0x2000)    //  8000
-#define DATA_START      (FIRMWARE_START +0x2000)
+#define DATA_START      (0xD000)//(FIRMWARE_START +0x2000)
 #define PAGE_SIZE       1024
+#define PARAM_START     (UPLOAD_START)
 
 #define SPI_BITRATE     250000
 
@@ -78,9 +56,18 @@ typedef enum    {
         GANCAL    = 0x61
                 } _1282command;
 
-uint8_t     data[PAGE_SIZE];
-uint8_t     freq=1;
-uint8_t     channels=1;
+uint8_t     data[PAGE_SIZE+16];
+uint8_t     freq=25;
+uint8_t     channel=1;
+
+uint32_t    time=0;
+
+jsmn_parser parser;
+        jsmntok_t t[128];
+
+        int8_t r,i;
+        char message[128];
+
 
 void SysTickInt (void);
 
@@ -135,23 +122,31 @@ ConfigureGPIO(void)
     ROM_SysCtlPeripheralEnable(LED_CTL);
     while(!(ROM_SysCtlPeripheralReady(LED_CTL)));
     ROM_GPIOPinTypeGPIOOutput(LED_PORT, LEDS);
-         #if BTN_GPIO_PERIPH == SYSCTL_PERIPH_GPIOF && (BTN_LEFT == GPIO_PIN_0)
+         #if BTN_CTL == SYSCTL_PERIPH_GPIOF && (BTN_LEFT == GPIO_PIN_0)
              HWREG(GPIO_PORTF_BASE + GPIO_O_LOCK) = GPIO_LOCK_KEY; // Unlocks the GPIO_CR register
              HWREG(GPIO_PORTF_BASE + GPIO_O_CR) |= GPIO_PIN_0; // Allow changes to PF0
              HWREG(GPIO_PORTF_BASE + GPIO_O_LOCK) = 0; // Lock register again
          #endif
+#if BTN_CTL == SYSCTL_PERIPH_GPIOF && (BTN_RIGHT == GPIO_PIN_0)
+    HWREG(GPIO_PORTF_BASE + GPIO_O_LOCK) = GPIO_LOCK_KEY; // Unlocks the GPIO_CR register
+    HWREG(GPIO_PORTF_BASE + GPIO_O_CR) |= GPIO_PIN_0; // Allow changes to PF0
+    HWREG(GPIO_PORTF_BASE + GPIO_O_LOCK) = 0; // Lock register again
+#endif
     ROM_GPIODirModeSet(BTN_PORT, BTNS,  GPIO_DIR_MODE_IN);
     ROM_GPIOPadConfigSet(BTN_PORT, BTNS,  GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
 }
 
 void ConfigureSysTick(void)
     {
-        ROM_SysTickPeriodSet(ROM_SysCtlClockGet()/freq);
+        ROM_SysTickEnable();
+        ROM_SysTickPeriodSet(ROM_SysCtlClockGet()/1000);
+
         ROM_SysCtlDelay(ROM_SysCtlClockGet()/100);
         //ROM_
         SysTickIntRegister(SysTickInt);
         ROM_SysTickIntEnable();
-        ROM_SysTickEnable();
+
+
     }
 
 void    send_command1282    (_1282command cmd)
@@ -241,11 +236,24 @@ uint8_t configure_1282(void)
         UARTprintf("\nall reg read:\n");
         read_registers1282(0x00,byte,10);
         byte[0]=0x42;
-        //byte[1]=0x08;//ain1
-        byte[1]=0x18;//ain2
-        //byte[1]=0x28;//400 ohm short
-        //byte[1]=0x38;//ain1=ain2
-        //byte[1]=0x48;//short to AINN2
+        switch(channel)
+            {
+                case 1:
+                    byte[1]=0x08;//ain1
+                break;
+                case 2:
+                    byte[1]=0x18;//ain2
+                break;
+                case 3:
+                    byte[1]=0x28;//400 ohm short
+                break;
+                case 4:
+                    byte[1]=0x38;//ain1=ain2
+                break;
+                default:
+                    byte[1]=0x48;//short to AINN2
+                break;
+            }
         UARTprintf("\n2 reg write:\n");
         byte[15]=write_registers1282(0x01,byte,2);
         UARTprintf("\n2 reg compare: ");
@@ -264,22 +272,78 @@ void    blink(uint32_t off_ms, uint32_t on_ms)
         LED_SET(LED_RED);
         ROM_SysCtlDelay(on_ms*ROM_SysCtlClockGet()/1000);
         LED_SET(0);
-        ROM_SysCtlDelay(off_ms*ROM_SysCtlClockGet()/1000);
+        if(off_ms)ROM_SysCtlDelay(off_ms*ROM_SysCtlClockGet()/1000);
         LED_SET(LED_BLUE);
         ROM_SysCtlDelay(on_ms*ROM_SysCtlClockGet()/1000);
         LED_SET(0);
-        ROM_SysCtlDelay(off_ms*ROM_SysCtlClockGet()/1000);
+        if(off_ms)ROM_SysCtlDelay(off_ms*ROM_SysCtlClockGet()/1000);
         LED_SET(LED_GREEN);
         ROM_SysCtlDelay(on_ms*ROM_SysCtlClockGet()/1000);
         LED_SET(0);
-        ROM_SysCtlDelay(off_ms*ROM_SysCtlClockGet()/1000);
+        if(off_ms)ROM_SysCtlDelay(off_ms*ROM_SysCtlClockGet()/1000);
     }
+static int jsoneq(const char *json, jsmntok_t *tok, const char *s) {
+  if (tok->type == JSMN_STRING && (int)strlen(s) == tok->end - tok->start &&
+      strncmp(json + tok->start, s, tok->end - tok->start) == 0) {
+    return 0;
+  }
+  return -1;
+}
+int8_t settings_json_get (uint32_t address)
+    {
+    char *param;
+    param=(char*)address;
+    UARTprintf("param: %p;",param);
+    uint32_t param_len;
+    param_len=strlen(param);
+     UARTprintf(" length %d:\n%s\n",param_len,param);
 
+
+    jsmn_init(&parser);
+
+     r=jsmn_parse(&parser, /*js*/param, param_len, t, 128);
+
+    if (r < 0) {
+        UARTprintf("Failed to parse JSON: %d\n", r);
+        return 1;
+      }
+
+      /* Assume the top-level element is an object */
+      if (r < 1 || t[0].type != JSMN_OBJECT) {
+          UARTprintf("Object expected\n");
+        return 1;
+      }
+      /* Loop over all keys of the root object */
+      for (i = 1; i < r; i++) {
+        if (jsoneq(param, &t[i], "frequency") == 0) {
+            sprintf(message,"%.*s", t[i + 1].end - t[i + 1].start,
+                       param + t[i + 1].start);
+            sscanf(message,"%d",&freq);
+            //UARTprintf("frequency: %d ",freq);
+          i++;
+        } else if (jsoneq(param, &t[i], "channel") == 0) {
+            sprintf(message,"%.*s", t[i + 1].end - t[i + 1].start,
+                       param + t[i + 1].start);
+            sscanf(message,"%d",&channel);
+            //UARTprintf("channel: %d ",channel);
+          i++;
+        } else {
+            sprintf(message,"Unexpected key: %.*s\n", t[i].end - t[i].start,
+                       param + t[i].start);
+            UARTprintf("%s",message);
+        }
+      }
+
+
+    return 0;
+    }
 int
 main(void)
 {
-    uint32_t i=0;
+    uint32_t i=0,k=0;
+    int32_t converted;
     uint32_t    byte[16];
+    //char    string[32];
     uint32_t page_index=0, data_index=0;
     for (i = 0; i < PAGE_SIZE; i++) data[i] = 0;
     ROM_FPULazyStackingEnable();
@@ -290,8 +354,16 @@ main(void)
     ConfigureSPI();
     UARTprintf("Hello ads1282\n");
 
-    //for(i=DATA_START;i<FLASH_MAX;i+=PAGE_SIZE)   ROM_FlashErase(i);
-    UARTprintf("Flash erased from 0x%x to 0x%x\n",DATA_START,FLASH_MAX);
+    if(settings_json_get (PARAM_START))
+        {
+            UARTprintf("invalid PARAM file\n");
+            while(1)blink(1000,1000);
+        }
+    UARTprintf("channel: %d ",channel);
+    UARTprintf("frequency: %d ",freq);
+
+    for(i=DATA_START;i<FLASH_MAX;i+=PAGE_SIZE)   ROM_FlashErase(i);
+    UARTprintf("\nFlash erased from 0x%x to 0x%x\n",DATA_START,FLASH_MAX);
     byte[0]=configure_1282();
     if(byte[0])
         {
@@ -299,12 +371,17 @@ main(void)
             while(1)    blink(1000,1000);
         }
     ConfigureSysTick();
+    //send_command1282(SDATAC);//stop auto adc
     //send_command1282(RDATA);// manual adc start
-    //send_command1282(RDATAC);//start auto adc
+    send_command1282(RDATAC);//start auto adc
     while(page_index*PAGE_SIZE<FLASH_MAX-DATA_START)
     {
-        while (ROM_GPIOPinRead(BTN_PORT, BTN_LEFT))
+        LED_SET(LED_RED);
+        while (ROM_GPIOPinRead(BTN_PORT, BTN_RIGHT))
             ROM_SysCtlDelay(ROM_SysCtlClockGet() / 1000000);
+        LED_SET(0);
+        //if(ROM_GPIOPinRead(BTN_PORT, BTN_RIGHT))
+        //    blink(100,100);
 
         ROM_SSIDataPut(SSI0_BASE,0x00);
         ROM_SSIDataPut(SSI0_BASE,0x00);
@@ -312,24 +389,40 @@ main(void)
         ROM_SSIDataPut(SSI0_BASE,0x00);
         while(ROM_SSIBusy(SSI0_BASE)){}
         ROM_SysCtlDelay(3*ROM_SysCtlClockGet()/SPI_BITRATE);
+        k=0;
         for(i=0;i<4;i++)
             {
-                while(SSIDataGetNonBlocking(SSI0_BASE, &byte[i]))
-                    UARTprintf(" data[%d]:0x%X ",i,byte[i]&0xFF);
+                ROM_SSIDataGetNonBlocking(SSI0_BASE, &byte[i]);
+                data[data_index+i]=byte[i]&0xFF;
+                k|=(byte[i]&0xFF)<<8*(3-i);
             }
 
-        blink(1,1);
+        if(k>0x80000000)
+                converted=k-0xFFFFFFFF;
+            else
+                converted=k;
+
+        UARTprintf("%08x  %d",converted/1000);//data[data_index+i]);
+        data[data_index+i]=0x55;
+        //blink(0,1);
         data_index+=5;
         if(data_index>PAGE_SIZE)
             {
-                //ROM_FlashWrite();
+                ROM_FlashProgram((uint32_t*)data,page_index*PAGE_SIZE+DATA_START,PAGE_SIZE);
                 UARTprintf("Page wrote at %X with %d bytes\n",page_index*PAGE_SIZE+DATA_START,PAGE_SIZE);
                 page_index++;
+                for(i=data_index;i>PAGE_SIZE;i--)
+                    data[i-PAGE_SIZE]=data[i];
                 data_index-=PAGE_SIZE;
             }
+        //ROM_SysCtlDelay(ROM_SysCtlClockGet()/freq);
+        //send_command1282(RDATA);//start adc shot
+        UARTprintf("\n");
     }
-    //1282_aq_stop();
+
     UARTprintf("Flash is full, aq stopped\n");
+    //ROM_SysTickDisable();
+    send_command1282(STANDBY);
     while(1)
         {
             blink(0,300);
@@ -338,6 +431,10 @@ main(void)
 
 void SysTickInt (void)
     {
-        send_command1282(RDATA);//start adc shot
-        UARTprintf("\n");
+        time++;
+            if(time>1000/freq)
+                {
+                    //send_command1282(RDATA);//start adc shot
+                    time=0;
+                }
     }
